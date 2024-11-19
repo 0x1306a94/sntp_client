@@ -190,6 +190,12 @@ class SntpClient::Implement {
             return std::nullopt;
         }
 
+        // Prevent SIGPIPE signals
+        //防止终止进程的信号？
+        int nosigpipe = 1;
+        //SO_NOSIGPIPE是为了避免网络错误，而导致进程退出。用这个来避免系统发送signal
+        setsockopt(sockfd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
+
         // 设置超时
         struct timeval tv;
         tv.tv_sec = timeout_sec_;
