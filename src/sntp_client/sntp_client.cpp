@@ -35,7 +35,12 @@ constexpr int NTP_PACKET_SIZE = 48;
 constexpr char STANDARD_NTP_PORT[] = "123";
 constexpr int NTP_MODE_CLIENT = 3;
 constexpr int NTP_MODE_SERVER = 4;
+constexpr int NTP_MODE_BROADCAST = 4;
 constexpr int NTP_VERSION = 3;
+
+constexpr int NTP_LEAP_NOSYNC = 3;
+constexpr int NTP_STRATUM_DEATH = 0;
+constexpr int NTP_STRATUM_MAX = 15;
 
 struct TimeResult {
     double offset;          // 时间偏移
@@ -268,12 +273,19 @@ class SntpClient::Implement {
         // 记录接收时间 (t4)
         double t4 = system_clock_->currentTimeMillis() / 1000.0;
 
+        sntp_reply.ref_time.seconds = ntohl(sntp_reply.ref_time.seconds);
+        sntp_reply.ref_time.fraction = ntohl(sntp_reply.ref_time.fraction);
         sntp_reply.ori_time.seconds = ntohl(sntp_reply.ori_time.seconds);
         sntp_reply.ori_time.fraction = ntohl(sntp_reply.ori_time.fraction);
         sntp_reply.recv_time.seconds = ntohl(sntp_reply.recv_time.seconds);
         sntp_reply.recv_time.fraction = ntohl(sntp_reply.recv_time.fraction);
         sntp_reply.tran_time.seconds = ntohl(sntp_reply.tran_time.seconds);
         sntp_reply.tran_time.fraction = ntohl(sntp_reply.tran_time.fraction);
+
+        int stratum = sntp_reply.stratum & 0xff;
+        if (checkValidServerReply(sntp_reply.lvm.li, sntp_reply.lvm.mode, stratum, sntp_reply.tran_time, sntp_reply.ref_time, sntp_request.tran_time, sntp_reply.ori_time)) {
+            return std::nullopt;
+        }
 
         // 转换NTP时间戳为Unix时间戳
         double t1 = (sntp_reply.ori_time.seconds - NTP_TIMESTAMP_DELTA) + (double)sntp_reply.ori_time.fraction / (1LL << 32);
@@ -303,6 +315,52 @@ class SntpClient::Implement {
         }
 
         return result;
+    }
+
+    bool checkValidServerReply(int leap, int mode, int stratum, const ntp_timestamp &transmitTimestamp, const ntp_timestamp &referenceTimestamp, const ntp_timestamp &requestTimestamp, const ntp_timestamp &originateTimestamp) {
+        if (leap == NTP_LEAP_NOSYNC) {
+            if (verbose_) {
+                std::cerr << "unsynchronized server" << std::endl;
+            }
+            return false;
+        }
+
+        if ((mode != NTP_MODE_SERVER) && (mode != NTP_MODE_BROADCAST)) {
+            if (verbose_) {
+                std::cerr << "untrusted mode: " << mode << std::endl;
+            }
+            return false;
+        }
+
+        if ((stratum == NTP_STRATUM_DEATH) || (stratum > NTP_STRATUM_MAX)) {
+            if (verbose_) {
+                std::cerr << "untrusted stratum: " << stratum << std::endl;
+            }
+            return false;
+        }
+
+        if (requestTimestamp.seconds != originateTimestamp.seconds || requestTimestamp.fraction != originateTimestamp.fraction) {
+            if (verbose_) {
+                std::cerr << "originateTimestamp != randomizedRequestTimestamp" << std::endl;
+            }
+            return false;
+        }
+
+        if (transmitTimestamp.seconds == 0 && transmitTimestamp.fraction == 0) {
+            if (verbose_) {
+                std::cerr << "zero transmitTimestamp" << std::endl;
+            }
+            return false;
+        }
+
+        if (referenceTimestamp.seconds == 0 && referenceTimestamp.fraction == 0) {
+            if (verbose_) {
+                std::cerr << "zero referenceTimestamp" << std::endl;
+            }
+            return false;
+        }
+
+        return true;
     }
 
     double getServerTime() const {
